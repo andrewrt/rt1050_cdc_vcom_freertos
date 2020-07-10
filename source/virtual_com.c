@@ -116,6 +116,7 @@ volatile static uint8_t s_comOpen = 0;
 
 
 volatile bool g_InputSignal = false;
+volatile bool g_USBIsUp = false;
 
 /*******************************************************************************
 * Code
@@ -552,6 +553,8 @@ void USB_DeviceApplicationInit(void)
     USB_DeviceIsrEnable();
 
     USB_DeviceRun(s_cdcVcom.deviceHandle);
+
+    g_USBIsUp = true;
 }
 
 /*!
@@ -570,6 +573,43 @@ void USB_DeviceTask(void *handle)
     }
 }
 #endif
+
+
+
+void USB_DeviceClockDeInit(void) {
+    if (CONTROLLER_ID == kUSB_ControllerEhci0) {
+        CLOCK_DisableUsbhs0PhyPllClock();
+    }
+    else {
+        CLOCK_DisableUsbhs1PhyPllClock();
+    }
+    USB_EhciPhyDeinit(CONTROLLER_ID);
+}
+
+
+void USB_DeviceApplicationDEInit(void){
+//#if USB_DEVICE_CONFIG_USE_TASK
+//  if (s_cdcVcom.deviceHandle) {
+//    vTaskDelete( &s_cdcVcom.deviceTaskHandle);
+//  }
+//#endif
+
+  USB_DeviceStop(s_cdcVcom.deviceHandle);
+
+  //  USB_DeviceIsrDisable(); -- doesn't exist - manually do below:
+  uint8_t irqNumber;
+  uint8_t usbDeviceEhciIrq[] = USBHS_IRQS;
+  irqNumber                  = usbDeviceEhciIrq[CONTROLLER_ID - kUSB_ControllerEhci0];
+  DisableIRQ((IRQn_Type)irqNumber);
+
+  USB_DeviceClassDeinit(CONTROLLER_ID);
+
+  USB_DeviceClockDeInit();
+
+  g_USBIsUp = false;
+}
+
+
 
 /*!
  * @brief Application task function.
@@ -604,7 +644,14 @@ void APPTask(void *handle)
     while (1)
     {
     if (g_InputSignal){
+      if (g_USBIsUp){
+        //USB is on - try to turn off:
+        USB_DeviceApplicationDEInit();
+      } else {
+        //USB is off - try to turn on:
+        USB_DeviceApplicationInit();
 
+      }
 
       g_InputSignal = false;
     }
