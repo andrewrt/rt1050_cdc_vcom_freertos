@@ -40,6 +40,12 @@ extern uint8_t USB_EnterLowpowerMode(void);
 * Definitions
 ******************************************************************************/
 
+#define EXAMPLE_SW_GPIO BOARD_USER_BUTTON_GPIO
+#define EXAMPLE_SW_GPIO_PIN BOARD_USER_BUTTON_GPIO_PIN
+#define EXAMPLE_SW_IRQ BOARD_USER_BUTTON_IRQ
+#define EXAMPLE_GPIO_IRQHandler BOARD_USER_BUTTON_IRQ_HANDLER
+#define EXAMPLE_SW_NAME BOARD_USER_BUTTON_NAME
+
 /*******************************************************************************
  * Prototypes
  ******************************************************************************/
@@ -107,9 +113,30 @@ static usb_device_class_config_list_struct_t s_cdcAcmConfigList = {
 volatile static uint8_t s_waitForDataReceive = 0;
 volatile static uint8_t s_comOpen = 0;
 #endif
+
+
+volatile bool g_InputSignal = false;
+
 /*******************************************************************************
 * Code
 ******************************************************************************/
+/*!
+ * @brief Interrupt service fuction of switch.
+ */
+void EXAMPLE_GPIO_IRQHandler(void)
+{
+  /* clear the interrupt status */
+  GPIO_PortClearInterruptFlags(EXAMPLE_SW_GPIO, 1U << EXAMPLE_SW_GPIO_PIN);
+  /* Change state of switch. */
+  g_InputSignal = true;
+  /* Add for ARM errata 838869, affects Cortex-M4, Cortex-M4F Store immediate overlapping
+      exception return operation might vector to incorrect interrupt */
+#if defined __CORTEX_M && (__CORTEX_M == 4U)
+  __DSB();
+#endif
+}
+
+
 
 void USB_OTG1_IRQHandler(void)
 {
@@ -576,6 +603,11 @@ void APPTask(void *handle)
 
     while (1)
     {
+    if (g_InputSignal){
+
+
+      g_InputSignal = false;
+    }
         if ((1 == s_cdcVcom.attach) && (1 == s_cdcVcom.startTransactions))
         {
             /* User Code */
@@ -650,11 +682,25 @@ int main(void)
 void main(void)
 #endif
 {
+    gpio_pin_config_t sw_config = {
+      kGPIO_DigitalInput,
+      0,
+      kGPIO_IntRisingEdge,
+    };
     BOARD_ConfigMPU();
 
     BOARD_InitPins();
     BOARD_BootClockRUN();
     BOARD_InitDebugConsole();
+
+
+  /* Init input switch GPIO. */
+  EnableIRQ(EXAMPLE_SW_IRQ);
+  GPIO_PinInit(EXAMPLE_SW_GPIO, EXAMPLE_SW_GPIO_PIN, &sw_config);
+
+  /* Enable GPIO pin interrupt */
+  GPIO_PortEnableInterrupts(EXAMPLE_SW_GPIO, 1U << EXAMPLE_SW_GPIO_PIN);
+
 
     if (xTaskCreate(APPTask,                         /* pointer to the task                      */
                     s_appName,                       /* task name for kernel awareness debugging */
