@@ -521,6 +521,28 @@ usb_status_t USB_DeviceCallback(usb_device_handle handle, uint32_t event, void *
     return error;
 }
 
+
+
+/*!
+ * @brief USB task function.
+ *
+ * This function runs the task for USB device.
+ *
+ * @return None.
+ */
+#if USB_DEVICE_CONFIG_USE_TASK
+void USB_DeviceTask(void *handle)
+{
+    while (1U)
+    {
+        USB_DeviceTaskFn(handle);
+    }
+}
+#endif
+
+
+
+
 /*!
  * @brief Application initialization function.
  *
@@ -554,25 +576,26 @@ void USB_DeviceApplicationInit(void)
 
     USB_DeviceRun(s_cdcVcom.deviceHandle);
 
+
+#if USB_DEVICE_CONFIG_USE_TASK
+    if (s_cdcVcom.deviceHandle)
+    {
+        if (xTaskCreate(USB_DeviceTask,                  /* pointer to the task                      */
+                        (char const *)"usb device task", /* task name for kernel awareness debugging */
+                        5000L / sizeof(portSTACK_TYPE),  /* task stack size                          */
+                        s_cdcVcom.deviceHandle,          /* optional task startup argument           */
+                        5,                               /* initial priority                         */
+                        &s_cdcVcom.deviceTaskHandle      /* optional task handle to create           */
+                        ) != pdPASS)
+        {
+            usb_echo("usb device task create failed!\r\n");
+            return;
+        }
+    }
+#endif
+
     g_USBIsUp = true;
 }
-
-/*!
- * @brief USB task function.
- *
- * This function runs the task for USB device.
- *
- * @return None.
- */
-#if USB_DEVICE_CONFIG_USE_TASK
-void USB_DeviceTask(void *handle)
-{
-    while (1U)
-    {
-        USB_DeviceTaskFn(handle);
-    }
-}
-#endif
 
 
 
@@ -588,11 +611,11 @@ void USB_DeviceClockDeInit(void) {
 
 
 void USB_DeviceApplicationDEInit(void){
-//#if USB_DEVICE_CONFIG_USE_TASK
-//  if (s_cdcVcom.deviceHandle) {
-//    vTaskDelete( &s_cdcVcom.deviceTaskHandle);
-//  }
-//#endif
+#if USB_DEVICE_CONFIG_USE_TASK
+  if (s_cdcVcom.deviceTaskHandle != NULL) {
+    vTaskDelete( s_cdcVcom.deviceTaskHandle);
+  }
+#endif
 
   USB_DeviceStop(s_cdcVcom.deviceHandle);
 
@@ -624,22 +647,6 @@ void APPTask(void *handle)
 
     USB_DeviceApplicationInit();
 
-#if USB_DEVICE_CONFIG_USE_TASK
-    if (s_cdcVcom.deviceHandle)
-    {
-        if (xTaskCreate(USB_DeviceTask,                  /* pointer to the task                      */
-                        (char const *)"usb device task", /* task name for kernel awareness debugging */
-                        5000L / sizeof(portSTACK_TYPE),  /* task stack size                          */
-                        s_cdcVcom.deviceHandle,          /* optional task startup argument           */
-                        5,                               /* initial priority                         */
-                        &s_cdcVcom.deviceTaskHandle      /* optional task handle to create           */
-                        ) != pdPASS)
-        {
-            usb_echo("usb device task create failed!\r\n");
-            return;
-        }
-    }
-#endif
 
     while (1)
     {
