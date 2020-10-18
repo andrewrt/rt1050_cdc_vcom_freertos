@@ -36,6 +36,16 @@
 extern uint8_t USB_EnterLowpowerMode(void);
 #endif
 #include "pin_mux.h"
+
+
+
+typedef struct USB_CMD_MSG{
+	void *json_str_ptr;
+	uint32_t size;
+} queue_event_t;
+
+
+
 /*******************************************************************************
 * Definitions
 ******************************************************************************/
@@ -118,6 +128,8 @@ volatile static uint8_t s_comOpen = 0;
 volatile bool g_InputSignal = false;
 volatile bool g_USBIsUp = false;
 
+static TaskHandle_t usb_tx_task_handle;
+static QueueHandle_t x_usb_tx_queue;
 /*******************************************************************************
 * Code
 ******************************************************************************/
@@ -634,6 +646,71 @@ void USB_DeviceApplicationDEInit(void){
 
 
 
+void usbRxTask(void *handle) {
+	queue_event_t usb_tx_event;
+	BaseType_t x_status;
+
+	USB_DeviceApplicationInit();
+
+	for (;;){
+		while ((1 == s_cdcVcom.attach) && (1 == s_cdcVcom.startTransactions)) {
+			/* User Code */
+			if ((0 != s_recvSize) && (0xFFFFFFFF != s_recvSize)) {
+				int32_t i;
+
+				/* Copy Buffer to Send Buff */
+				for (i = 0; i < s_recvSize; i++) {
+					s_currSendBuf[s_sendSize++] = s_currRecvBuf[i];
+				}
+				s_recvSize = 0;
+			}
+
+			if (s_sendSize) {
+				uint32_t size = s_sendSize;
+				s_sendSize = 0;
+
+				char *usb_enqueue_buf = pvPortMalloc(size);
+				if (usb_enqueue_buf != NULL) {
+					memcpy(usb_enqueue_buf, s_currSendBuf, size);
+					usb_tx_event.json_str_ptr = usb_enqueue_buf;
+					usb_tx_event.size = size;
+					x_status = xQueueSendToBack(x_usb_tx_queue, &usb_tx_event, 0);
+					if (x_status == pdPASS) {
+					}
+				}
+			}
+		}
+
+
+		vTaskDelay(2);
+	}
+
+
+}
+
+void usbTxTask(void *handle){
+	BaseType_t x_status;
+	usb_status_t error = kStatus_USB_Error;
+	queue_event_t usb_tx_event;
+
+	for (;;){
+		/* Receive the address of a buffer. */
+		x_status = xQueueReceive( x_usb_tx_queue,  &usb_tx_event, portMAX_DELAY );
+		if( x_status == pdPASS ) {
+
+			if (usb_tx_event.size > 0){
+				uint32_t size = usb_tx_event.size;
+				error = USB_DeviceCdcAcmSend(s_cdcVcom.cdcAcmHandle, USB_CDC_VCOM_BULK_IN_ENDPOINT, (uint8_t *)usb_tx_event.json_str_ptr, size);
+				if (error != kStatus_USB_Success) {
+					/* Failure to send Data Handling code here */
+				}
+				//free after done w/ mallooc'ed data:
+				vPortFree(usb_tx_event.json_str_ptr);
+			}
+		}
+	}
+}
+
 /*!
  * @brief Application task function.
  *
@@ -643,91 +720,42 @@ void USB_DeviceApplicationDEInit(void){
  */
 void APPTask(void *handle)
 {
-    usb_status_t error = kStatus_USB_Error;
 
-    USB_DeviceApplicationInit();
+	x_usb_tx_queue = xQueueCreate(5, sizeof(queue_event_t));
 
 
-    while (1)
-    {
-    if (g_InputSignal){
-      if (g_USBIsUp){
-        //USB is on - try to turn off:
-        USB_DeviceApplicationDEInit();
-      } else {
-        //USB is off - try to turn on:
-        USB_DeviceApplicationInit();
 
-      }
+	while (1)
+	{
+		if (g_InputSignal){
+			if (g_USBIsUp){
+				//USB is on - try to turn off:
+				//de-init USB stack:
+				USB_DeviceApplicationDEInit();
 
-      g_InputSignal = false;
-    }
-        if ((1 == s_cdcVcom.attach) && (1 == s_cdcVcom.startTransactions))
-        {
-            /* User Code */
-            if ((0 != s_recvSize) && (0xFFFFFFFF != s_recvSize))
-            {
-                int32_t i;
+				//stop USB RX Task:
+				if (s_cdcVcom.applicationTaskHandle) {
+					vTaskDelete( s_cdcVcom.applicationTaskHandle);
+				}
+				if (usb_tx_task_handle) {
+					vTaskDelete( usb_tx_task_handle);
+				}
+				//        if (virtual_com_event_group){
+				//          vEventGroupDelete(virtual_com_event_group);
+				//        }
+			} else {
+				if (xTaskCreate(usbRxTask, "usbRxTask", 8000L / sizeof(portSTACK_TYPE),  &s_cdcVcom, 3, &s_cdcVcom.applicationTaskHandle ) != pdPASS) {
+					return;
+				}
+				if (xTaskCreate(usbTxTask, "usbTxTask", 4000L, NULL, 3, &usb_tx_task_handle ) != pdPASS) {
+					return;
+				}
+			}
 
-                /* Copy Buffer to Send Buff */
-                for (i = 0; i < s_recvSize; i++)
-                {
-                    s_currSendBuf[s_sendSize++] = s_currRecvBuf[i];
-                }
-                s_recvSize = 0;
-            }
+			g_InputSignal = false;
+		}
 
-            if (s_sendSize)
-            {
-                uint32_t size = s_sendSize;
-                s_sendSize = 0;
-
-                error =
-                    USB_DeviceCdcAcmSend(s_cdcVcom.cdcAcmHandle, USB_CDC_VCOM_BULK_IN_ENDPOINT, s_currSendBuf, size);
-                if (error != kStatus_USB_Success)
-                {
-                    /* Failure to send Data Handling code here */
-                }
-            }
-#if defined(FSL_FEATURE_USB_KHCI_KEEP_ALIVE_ENABLED) && (FSL_FEATURE_USB_KHCI_KEEP_ALIVE_ENABLED > 0U) && \
-    defined(USB_DEVICE_CONFIG_KEEP_ALIVE_MODE) && (USB_DEVICE_CONFIG_KEEP_ALIVE_MODE > 0U) &&             \
-    defined(FSL_FEATURE_USB_KHCI_USB_RAM) && (FSL_FEATURE_USB_KHCI_USB_RAM > 0U)
-            if ((s_waitForDataReceive))
-            {
-                if (s_comOpen == 1)
-                {
-                    /* Wait for all the packets been sent during opening the com port. Otherwise these packets may
-                     * wake up the system.
-                    */
-                    usb_echo("Waiting to enter lowpower ...\r\n");
-                    for (uint32_t i = 0U; i < 16000000U; ++i)
-                    {
-                        __ASM("NOP"); /* delay */
-                    }
-
-                    s_comOpen = 0;
-                }
-                usb_echo("Enter lowpower\r\n");
-                BOARD_DbgConsole_Deinit();
-                USB0->INTEN &= ~USB_INTEN_TOKDNEEN_MASK;
-                if (SysTick->CTRL & SysTick_CTRL_ENABLE_Msk)
-                {
-                    SysTick->CTRL &= ~SysTick_CTRL_TICKINT_Msk;
-                }
-                USB_EnterLowpowerMode();
-
-                if (SysTick->CTRL & SysTick_CTRL_ENABLE_Msk)
-                {
-                    SysTick->CTRL |= SysTick_CTRL_TICKINT_Msk;
-                }
-                s_waitForDataReceive = 0;
-                USB0->INTEN |= USB_INTEN_TOKDNEEN_MASK;
-                BOARD_DbgConsole_Init();
-                usb_echo("Exit  lowpower\r\n");
-            }
-#endif
-        }
-    }
+	}
 }
 
 #if defined(__CC_ARM) || (defined(__ARMCC_VERSION)) || defined(__GNUC__)
@@ -736,45 +764,45 @@ int main(void)
 void main(void)
 #endif
 {
-    gpio_pin_config_t sw_config = {
-      kGPIO_DigitalInput,
-      0,
-      kGPIO_IntRisingEdge,
-    };
-    BOARD_ConfigMPU();
+	gpio_pin_config_t sw_config = {
+			kGPIO_DigitalInput,
+			0,
+			kGPIO_IntRisingEdge,
+	};
+	BOARD_ConfigMPU();
 
-    BOARD_InitPins();
-    BOARD_BootClockRUN();
-    BOARD_InitDebugConsole();
-
-
-  /* Init input switch GPIO. */
-  EnableIRQ(EXAMPLE_SW_IRQ);
-  GPIO_PinInit(EXAMPLE_SW_GPIO, EXAMPLE_SW_GPIO_PIN, &sw_config);
-
-  /* Enable GPIO pin interrupt */
-  GPIO_PortEnableInterrupts(EXAMPLE_SW_GPIO, 1U << EXAMPLE_SW_GPIO_PIN);
+	BOARD_InitPins();
+	BOARD_BootClockRUN();
+	BOARD_InitDebugConsole();
 
 
-    if (xTaskCreate(APPTask,                         /* pointer to the task                      */
-                    s_appName,                       /* task name for kernel awareness debugging */
-                    5000L / sizeof(portSTACK_TYPE),  /* task stack size                          */
-                    &s_cdcVcom,                      /* optional task startup argument           */
-                    4,                               /* initial priority                         */
-                    &s_cdcVcom.applicationTaskHandle /* optional task handle to create           */
-                    ) != pdPASS)
-    {
-        usb_echo("app task create failed!\r\n");
+	/* Init input switch GPIO. */
+	EnableIRQ(EXAMPLE_SW_IRQ);
+	GPIO_PinInit(EXAMPLE_SW_GPIO, EXAMPLE_SW_GPIO_PIN, &sw_config);
+
+	/* Enable GPIO pin interrupt */
+	GPIO_PortEnableInterrupts(EXAMPLE_SW_GPIO, 1U << EXAMPLE_SW_GPIO_PIN);
+
+
+	if (xTaskCreate(APPTask,                         /* pointer to the task                      */
+			s_appName,                       /* task name for kernel awareness debugging */
+			5000L / sizeof(portSTACK_TYPE),  /* task stack size                          */
+			&s_cdcVcom,                      /* optional task startup argument           */
+			3,                               /* initial priority                         */
+			&s_cdcVcom.applicationTaskHandle /* optional task handle to create           */
+	) != pdPASS)
+	{
+		usb_echo("app task create failed!\r\n");
 #if (defined(__CC_ARM) || (defined(__ARMCC_VERSION)) || defined(__GNUC__))
-        return 1;
+		return 1;
 #else
-        return;
+		return;
 #endif
-    }
+	}
 
-    vTaskStartScheduler();
+	vTaskStartScheduler();
 
 #if (defined(__CC_ARM) || (defined(__ARMCC_VERSION)) || defined(__GNUC__))
-    return 1;
+	return 1;
 #endif
 }
