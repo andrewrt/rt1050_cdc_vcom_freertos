@@ -740,9 +740,6 @@ void APPTask(void *handle)
 				if (usb_tx_task_handle) {
 					vTaskDelete( usb_tx_task_handle);
 				}
-				//        if (virtual_com_event_group){
-				//          vEventGroupDelete(virtual_com_event_group);
-				//        }
 			} else {
 				if (xTaskCreate(usbRxTask, "usbRxTask", 8000L / sizeof(portSTACK_TYPE),  &s_cdcVcom, 3, &s_cdcVcom.applicationTaskHandle ) != pdPASS) {
 					return;
